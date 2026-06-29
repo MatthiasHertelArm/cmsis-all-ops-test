@@ -66,8 +66,8 @@ alignas(16) uint8_t g_temp_pool[kTempPoolSize];
 inline volatile uint32_t& reg32(uintptr_t addr) {
   return *reinterpret_cast<volatile uint32_t*>(addr);
 }
-constexpr uintptr_t kDemcr = 0xE000EDFC;    // CoreDebug DEMCR, TRCENA = bit 24
-constexpr uintptr_t kDwtCtrl = 0xE0001000;  // DWT_CTRL, CYCCNTENA = bit 0
+constexpr uintptr_t kDemcr = 0xE000EDFC; // CoreDebug DEMCR, TRCENA = bit 24
+constexpr uintptr_t kDwtCtrl = 0xE0001000; // DWT_CTRL, CYCCNTENA = bit 0
 constexpr uintptr_t kDwtCyccnt = 0xE0001004;
 
 // Per-op stats accumulated during the run and dumped as a table at the end.
@@ -114,9 +114,10 @@ bool tensors_match(
     float atol,
     float rtol) {
   if (got.nbytes() != expected_bytes) {
-    printf("  size mismatch: got %u vs expected %u bytes\n",
-           static_cast<unsigned>(got.nbytes()),
-           static_cast<unsigned>(expected_bytes));
+    printf(
+        "  size mismatch: got %u vs expected %u bytes\n",
+        static_cast<unsigned>(got.nbytes()),
+        static_cast<unsigned>(expected_bytes));
     return false;
   }
   const auto dtype = got.scalar_type();
@@ -137,15 +138,24 @@ bool tensors_match(
         ok = false;
       }
     }
-    printf("  [cmp] %u float(s): max|err|=%g at [%u] (got %f vs exp %f),"
-           " atol=%g rtol=%g -> %s\n",
-           static_cast<unsigned>(n), max_abs, static_cast<unsigned>(worst),
-           a[worst], b[worst], atol, rtol, ok ? "within tol" : "OUT OF TOL");
+    printf(
+        "  [cmp] %u float(s): max|err|=%g at [%u] (got %f vs exp %f),"
+        " atol=%g rtol=%g -> %s\n",
+        static_cast<unsigned>(n),
+        max_abs,
+        static_cast<unsigned>(worst),
+        a[worst],
+        b[worst],
+        atol,
+        rtol,
+        ok ? "within tol" : "OUT OF TOL");
     return ok;
   }
   bool ok = std::memcmp(got.const_data_ptr(), expected, expected_bytes) == 0;
-  printf("  [cmp] %u byte(s) exact compare -> %s\n",
-         static_cast<unsigned>(expected_bytes), ok ? "match" : "MISMATCH");
+  printf(
+      "  [cmp] %u byte(s) exact compare -> %s\n",
+      static_cast<unsigned>(expected_bytes),
+      ok ? "match" : "MISMATCH");
   return ok;
 }
 
@@ -159,15 +169,20 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
   row.in_bytes = 0;
   row.out_bytes = 0;
   row.cycles = 0;
-  printf("Test_exec: %s (dir=%s) pte=%u bytes, %u input(s), %u expected\n",
-         m.op, m.dir, static_cast<unsigned>(m.pte_size),
-         static_cast<unsigned>(m.num_inputs),
-         static_cast<unsigned>(m.num_outputs));
+  printf(
+      "Test_exec: %s (dir=%s) pte=%u bytes, %u input(s), %u expected\n",
+      m.op,
+      m.dir,
+      static_cast<unsigned>(m.pte_size),
+      static_cast<unsigned>(m.num_inputs),
+      static_cast<unsigned>(m.num_outputs));
   BufferLoader loader(m.pte_data, m.pte_size);
   Result<Program> program = Program::load(&loader);
   if (!program.ok()) {
-    printf("Test_result: %s FAIL (Program::load err=%u)\n",
-           m.op, static_cast<unsigned>(program.error()));
+    printf(
+        "Test_result: %s FAIL (Program::load err=%u)\n",
+        m.op,
+        static_cast<unsigned>(program.error()));
     return false;
   }
 
@@ -192,8 +207,7 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
   MemoryManager memory_manager(
       &method_allocator, &planned_memory, &temp_allocator);
 
-  Result<Method> method =
-      program->load_method(method_name, &memory_manager);
+  Result<Method> method = program->load_method(method_name, &memory_manager);
   if (!method.ok()) {
     printf("Test_result: %s FAIL (load_method)\n", m.op);
     return false;
@@ -206,23 +220,29 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
       continue;
     }
     if (i >= m.num_inputs) {
-      printf("Test_result: %s FAIL (missing embedded input %u)\n",
-             m.op, static_cast<unsigned>(i));
+      printf(
+          "Test_result: %s FAIL (missing embedded input %u)\n",
+          m.op,
+          static_cast<unsigned>(i));
       return false;
     }
     const EmbeddedBuffer& src = m.inputs[i];
     Tensor t = in.toTensor();
     if (src.size != t.nbytes()) {
-      printf("Test_result: %s FAIL (input %u size %u vs %u)\n",
-             m.op, static_cast<unsigned>(i),
-             static_cast<unsigned>(src.size),
-             static_cast<unsigned>(t.nbytes()));
+      printf(
+          "Test_result: %s FAIL (input %u size %u vs %u)\n",
+          m.op,
+          static_cast<unsigned>(i),
+          static_cast<unsigned>(src.size),
+          static_cast<unsigned>(t.nbytes()));
       return false;
     }
     std::memcpy(t.mutable_data_ptr(), src.data, src.size);
     row.in_bytes += src.size;
-    printf("  [in %u] %u bytes\n", static_cast<unsigned>(i),
-           static_cast<unsigned>(src.size));
+    printf(
+        "  [in %u] %u bytes\n",
+        static_cast<unsigned>(i),
+        static_cast<unsigned>(src.size));
   }
 
   printf("  [run] %s execute() ...\n", m.op);
@@ -235,8 +255,10 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
   }
 
   size_t num_outputs = method->outputs_size();
-  printf("  [run] %s execute() ok, %u output(s)\n",
-         m.op, static_cast<unsigned>(num_outputs));
+  printf(
+      "  [run] %s execute() ok, %u output(s)\n",
+      m.op,
+      static_cast<unsigned>(num_outputs));
   bool pass = true;
   for (size_t i = 0; i < num_outputs; ++i) {
     EValue out = method->get_output(i);
@@ -244,8 +266,10 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
       continue;
     }
     if (i >= m.num_outputs) {
-      printf("Test_result: %s FAIL (missing embedded expected %u)\n",
-             m.op, static_cast<unsigned>(i));
+      printf(
+          "Test_result: %s FAIL (missing embedded expected %u)\n",
+          m.op,
+          static_cast<unsigned>(i));
       return false;
     }
     const EmbeddedBuffer& exp = m.expected[i];
@@ -261,7 +285,7 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
   return pass;
 }
 
-}  // namespace
+} // namespace
 
 extern "C" int main(void) {
   // Unbuffered stdout: the bare-metal startup may loop after main() returns
@@ -285,21 +309,31 @@ extern "C" int main(void) {
     }
   }
 
-  printf("\n==== Per-op results (%u models) ====\n",
-         static_cast<unsigned>(total));
-  printf("%-30s %-6s %10s %8s %8s %12s\n",
-         "op", "result", "model(B)", "in(B)", "out(B)", "cycles");
+  printf(
+      "\n==== Per-op results (%u models) ====\n", static_cast<unsigned>(total));
+  printf(
+      "%-30s %-6s %10s %8s %8s %12s\n",
+      "op",
+      "result",
+      "model(B)",
+      "in(B)",
+      "out(B)",
+      "cycles");
   for (size_t mi = 0; mi < total && mi < kMaxRows; ++mi) {
     const RowStat& r = g_rows[mi];
-    printf("%-30s %-6s %10u %8u %8u %12u\n",
-           r.m->op, r.pass ? "PASS" : "FAIL",
-           static_cast<unsigned>(r.m->pte_size),
-           static_cast<unsigned>(r.in_bytes),
-           static_cast<unsigned>(r.out_bytes),
-           static_cast<unsigned>(r.cycles));
+    printf(
+        "%-30s %-6s %10u %8u %8u %12u\n",
+        r.m->op,
+        r.pass ? "PASS" : "FAIL",
+        static_cast<unsigned>(r.m->pte_size),
+        static_cast<unsigned>(r.in_bytes),
+        static_cast<unsigned>(r.out_bytes),
+        static_cast<unsigned>(r.cycles));
   }
 
-  printf("Test_result: SUMMARY %u/%u PASS\n",
-         static_cast<unsigned>(passed), static_cast<unsigned>(total));
+  printf(
+      "Test_result: SUMMARY %u/%u PASS\n",
+      static_cast<unsigned>(passed),
+      static_cast<unsigned>(total));
   return passed == total ? 0 : 1;
 }

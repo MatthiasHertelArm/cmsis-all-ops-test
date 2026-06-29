@@ -12,19 +12,28 @@ project:
     - pack: PyTorch::ExecuTorch
 
   define:
-    # Enable ExecuTorch verbose logging. ET_LOG() emits via et_pal_emit_log_message
-    # which we override in et_pal_override.cpp -> printf -> semihosting.
+    # Route ExecuTorch ET_LOG() through et_pal_override.cpp -> printf ->
+    # semihosting so runtime load/execute failures are visible on the FVP.
     - ET_LOG_ENABLED: 1
     - ET_MIN_LOG_LEVEL: Debug
 
-  # Resolve the relative .incbin paths in embedded_models.S (models/<dir>/<file>)
-  # against the project directory regardless of the assembler's working dir.
+  # Resolve project-local headers (random_device_shim.h) for the -include below,
+  # including from pack component sources.
   add-path:
+    - .
+
+  # add-path is C/C++ only; the assembler needs add-path-asm so
+  # embedded_models_blob.S resolves its relative `.incbin "models/..."` paths
+  # regardless of the build working directory.
+  add-path-asm:
     - .
 
   components:
     - component: ARM::CMSIS:CORE
     - component: ARM::Device:Startup&C Startup
+    - component: ARM::CMSIS-Compiler:CORE
+    - component: ARM::CMSIS-Compiler:STDOUT:Custom
+    - component: ARM::CMSIS-Compiler:STDERR:Custom
     - component: Machine Learning:ExecuTorch:Runtime
     - component: Machine Learning:ExecuTorch:Kernel Utils
     - component: Machine Learning:ExecuTorch:Kernel Registration
@@ -229,12 +238,36 @@ project:
   linker:
     - script: ./ARMCM55_large.ld
       for-compiler: GCC
+    - script: ./ARMCM55_large.ld
+      for-compiler: CLANG
+    - script: ./ARMCM55_large.sct
+      for-compiler: AC6
+
+  misc:
+    # AtFE/CLANG: force hard-float and -include the random_device shim so the RNG
+    # ops build against AtFE's libc++ (_LIBCPP_HAS_RANDOM_DEVICE 0; the shim
+    # self-guards, so it is a no-op for GCC/AC6). NOTE: re-asserting -mcpu here
+    # does NOT undo cbuild CLANG.cmake's -mfpu=fpv5-sp-d16, which disables MVE.fp
+    # (__ARM_FEATURE_MVE 3 -> 1); the Cortex-M Helium ops still need the op-guard
+    # patch (FP bit) and/or the toolbox -mfpu fix. See REPORT.md.
+    - for-compiler: CLANG
+      C: [-mcpu=cortex-m55, -mfloat-abi=hard]
+      CPP: [-mcpu=cortex-m55, -mfloat-abi=hard, -include, random_device_shim.h]
+      ASM: [-mcpu=cortex-m55, -mfloat-abi=hard]
+      Link: [-mcpu=cortex-m55, -mfloat-abi=hard]
+    # AC6: armlink's RW-data decompressor hardfaults at startup; disable RW
+    # compression so scatter-load does a plain copy.
+    - for-compiler: AC6
+      Link: [--datacompressor=off]
 
   groups:
     - group: App
       files:
         - file: ./main.cpp
+        # Per-op test models embedded into .rodata (.incbin) by
+        # gen_embedded_models.py. A stub (0 models) is emitted when the model
+        # export step has not run, so build/link coverage works without torch.
         - file: ./embedded_models.cpp
-        - file: ./embedded_models.S
-        - file: ./retarget_semihosting.cpp
+        - file: ./embedded_models_blob.S
+        - file: ./stdout_semihosting.c
         - file: ./et_pal_override.cpp

@@ -1,0 +1,190 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "FVP: Start",
+            "detail": "Launch the FVP container + fvp-gdb adapter on :3333. Stays alive across debug sessions until 'FVP: Stop' is run.",
+            "type": "shell",
+            "command": "fvp-gdb",
+            "options": {
+                "env": {
+                    "PATH": "${env:HOME}/Documents/Gerrit/FVPs-on-Mac/bin:${env:PATH}",
+                    "FVP_GDB_LOG": "/tmp/fvp-gdb.log"
+                }
+            },
+            "args": [
+                "--iris-port",
+                "7100",
+                "--gdb-port",
+                "3333",
+                "--swo-port",
+                "3343",
+                "--log-level",
+                "ERROR",
+                "--log-file",
+                "/tmp/fvp-gdb.log",
+                "--iris-connect-retry-secs",
+                "30",
+                "--wait-for-instantiation-secs",
+                "600",
+                "--launch",
+                "FVP_Corstone_SSE-300",
+                "-C",
+                "mps3_board.visualisation.disable-visualisation=1",
+                "-C",
+                "mps3_board.telnetterminal0.start_telnet=0",
+                "-C",
+                "mps3_board.uart0.out_file=-",
+                "-C",
+                "mps3_board.uart0.shutdown_on_eot=1",
+                "-C",
+                "cpu0.INITSVTOR=0x70000000",
+                "-C",
+                "mps3_board.sse300.iotss3_systemcontrol.INITSVTOR_RST=0x70000000",
+                "-C",
+                "cpu0.semihosting-enable=1"
+            ],
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "fvp-gdb",
+                "source": "fvp-gdb",
+                "fileLocation": "absolute",
+                "pattern": {
+                    "regexp": "^(\\S+):(\\d+): (.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^\\d\\d:\\d\\d:\\d\\d INFO\\s+fvp_gdb",
+                    "endsPattern": "listening for GDB on"
+                }
+            }
+        },
+        {
+            "label": "FVP: Stop",
+            "detail": "Kill fvp-gdb (its SIGTERM handler stops the FVP wrapper + docker stop on the FVP container).",
+            "type": "shell",
+            "command": "pkill -f 'fvp-gdb --gdb-port 3333' || true",
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared",
+                "showReuseMessage": false,
+                "clear": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "FVP: Restart",
+            "detail": "Stop then start the FVP -- forces a fresh container with the current ELF.",
+            "dependsOn": [
+                "FVP: Stop",
+                "FVP: Start"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
+            "label": "CMSIS Erase",
+            "type": "shell",
+            "command": "pyocd",
+            "options": {
+                "cwd": "${workspaceFolder}/",
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "problemMatcher": [],
+            "args": [
+                "erase",
+                "--probe",
+                "cmsisdap:",
+                "--chip",
+                "--cbuild-run",
+                "${command:cmsis-csolution.getCbuildRunFile}"
+            ]
+        },
+        {
+            "label": "CMSIS Load",
+            "type": "shell",
+            "command": "pyocd",
+            "options": {
+                "cwd": "${workspaceFolder}/",
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "problemMatcher": [],
+            "args": [
+                "load",
+                "--probe",
+                "cmsisdap:",
+                "--cbuild-run",
+                "${command:cmsis-csolution.getCbuildRunFile}"
+            ]
+        },
+        {
+            "label": "CMSIS Run",
+            "type": "shell",
+            "command": "pyocd",
+            "options": {
+                "cwd": "${workspaceFolder}/",
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "args": [
+                "gdbserver",
+                "--probe",
+                "cmsisdap:",
+                "--persist",
+                "--reset-run",
+                "--cbuild-run",
+                "${command:cmsis-csolution.getCbuildRunFile}",
+                "--quiet",
+                "--log",
+                "*.cbuild_run,*server=info"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "CMSIS Load+Run",
+            "dependsOn": [
+                "CMSIS Load",
+                "CMSIS Run"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
+            "label": "CMSIS TargetInfo",
+            "type": "shell",
+            "command": "pyocd",
+            "options": {
+                "cwd": "${workspaceFolder}/",
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "-c"
+                    ]
+                }
+            },
+            "args": [
+                "list",
+                "--cbuild-run",
+                "${command:cmsis-csolution.getCbuildRunFile}"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}

@@ -12,6 +12,7 @@ solution:
     - pack: ARM::CMSIS@>=6.0.0
     - pack: ARM::Cortex_DFP@>=1.1.0
     - pack: ARM::CMSIS-NN
+    - pack: ARM::CMSIS-Compiler
     - pack: PyTorch::ExecuTorch
 
   target-types:
