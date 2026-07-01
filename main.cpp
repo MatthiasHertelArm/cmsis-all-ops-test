@@ -287,7 +287,7 @@ bool run_one_model(const EmbeddedModel& m, RowStat& row) {
 
 } // namespace
 
-extern "C" int main(void) {
+int main(void) {
   // Unbuffered stdout: the bare-metal startup may loop after main() returns
   // (never calling exit()), so block-buffered output would never flush. Make
   // every printf reach the semihosting console immediately.
