@@ -18,7 +18,7 @@ namespace arm
   namespace embedded
   {
 
-    EmbeddedModule::EmbeddedModule(const char *pte_data,
+    EmbeddedModule::EmbeddedModule(const unsigned char *pte_data,
                                    size_t pte_size,
                                    std::unique_ptr<DataLoader> data_loader,
                                    std::unique_ptr<MemoryAllocator> memory_allocator,
@@ -137,13 +137,15 @@ namespace arm
       return Error::Ok;
     }
 
+    #if 0
     ET_NODISCARD Result<Method *> EmbeddedModule::method(
         const std::string &method_name)
     {
       ET_CHECK_OK_OR_RETURN_ERROR(load_method(method_name));
       return methods_[method_name].method.get();
     }
-
+    #endif 
+    
     Result<MethodMeta> EmbeddedModule::method_meta(const std::string &method_name)
     {
       ET_CHECK_OK_OR_RETURN_ERROR(load());

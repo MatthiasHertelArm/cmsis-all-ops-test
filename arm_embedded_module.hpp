@@ -41,7 +41,7 @@ namespace arm
        * temporary data during kernel or delegate execution.
        */
       explicit EmbeddedModule(
-          const char *pte_data,
+          const unsigned char *pte_data,
           size_t pte_size,
           std::unique_ptr<DataLoader> data_loader = nullptr,
           std::unique_ptr<MemoryAllocator> memory_allocator = nullptr,
@@ -117,12 +117,14 @@ namespace arm
           HierarchicalAllocator *planned_memory = nullptr,
           EventTracer *event_tracer = nullptr);
 
+      #if 0
       ET_DEPRECATED ET_NODISCARD Error inline load_method(
           const std::string &method_name,
           EventTracer *event_tracer)
       {
         return load_method(method_name, nullptr, event_tracer);
       }
+      #endif
 
       /**
        * Unload a specific method from the program.
@@ -136,6 +138,7 @@ namespace arm
         return methods_.erase(method_name);
       }
 
+      #if 0
       /**
        * DEPRECATED: EmbeddedModule manages each Method exclusively.
        *
@@ -150,6 +153,7 @@ namespace arm
        */
       ET_DEPRECATED ET_NODISCARD Result<Method *> method(
           const std::string &method_name);
+      #endif
 
       /**
        * Checks if a specific method is loaded.
@@ -538,7 +542,7 @@ namespace arm
 
       std::unique_ptr<EventTracer> event_tracer_;
 
-      const char *pte_data_;
+      const unsigned char *pte_data_;
       size_t pte_size_;
 
     protected:
