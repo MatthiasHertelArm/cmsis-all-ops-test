@@ -37,8 +37,10 @@
 #include <executorch/runtime/executor/program.h>
 #include <executorch/runtime/platform/runtime.h>
 
+
 #include "embedded_models.h"
 #include "arm_embedded_module.hpp"
+#include "arm_memory_allocator.h"
 
 using executorch::aten::Tensor;
 using executorch::runtime::DataLoader;
@@ -56,98 +58,155 @@ using executorch::runtime::Span;
 
 using namespace arm::embedded;
 
-namespace {
-
-constexpr size_t kMethodPoolSize = 16 * 1024 * 1024;
-constexpr size_t kTempPoolSize = 4 * 1024 * 1024;
-
-alignas(16) uint8_t g_method_pool[kMethodPoolSize];
-alignas(16) uint8_t g_temp_pool[kTempPoolSize];
-
-// Cortex-M55 DWT cycle counter, sampled around method->execute() to report a
-// rough inference cost per op.
-inline volatile uint32_t& reg32(uintptr_t addr) {
-  return *reinterpret_cast<volatile uint32_t*>(addr);
-}
-constexpr uintptr_t kDemcr = 0xE000EDFC; // CoreDebug DEMCR, TRCENA = bit 24
-constexpr uintptr_t kDwtCtrl = 0xE0001000; // DWT_CTRL, CYCCNTENA = bit 0
-constexpr uintptr_t kDwtCyccnt = 0xE0001004;
-
-// Per-op stats accumulated during the run and dumped as a table at the end.
-struct RowStat {
-  const EmbeddedModel* m;
-  bool pass;
-  size_t in_bytes;
-  size_t out_bytes;
-  uint32_t cycles;
-};
-constexpr size_t kMaxRows = 512;
-RowStat g_rows[kMaxRows];
-
-// Minimal in-memory DataLoader so we do not depend on the extension/ tree
-// (the pack ships only the runtime/ + kernels).
-class BufferLoader final : public DataLoader {
- public:
-  BufferLoader(const void* data, size_t size) : data_(data), size_(size) {}
-
-  Result<FreeableBuffer> load(
-      size_t offset,
-      size_t size,
-      const DataLoader::SegmentInfo&) const override {
-    if (offset + size > size_) {
-      return Error::InvalidArgument;
-    }
-    return FreeableBuffer(
-        static_cast<const uint8_t*>(data_) + offset, size, nullptr);
-  }
-
-  Result<size_t> size() const override {
-    return size_;
-  }
-
- private:
-  const void* data_;
-  size_t size_;
-};
-
-bool allclose(
-    const Tensor& a,
-    const Tensor& b,
-    double rtol = 1e-6,
-    double atol = 1e-6) 
+namespace
 {
 
-  int a_bytes = a.numel() * a.element_size();
-  int b_bytes = b.numel() * b.element_size();
+  constexpr size_t kMethodPoolSize = 16 * 1024 * 1024;
+  constexpr size_t kTempPoolSize = 4 * 1024 * 1024;
 
-  if (a_bytes != b_bytes)
+  alignas(16) uint8_t g_method_pool[kMethodPoolSize];
+  alignas(16) uint8_t g_temp_pool[kTempPoolSize];
+
+  // Cortex-M55 DWT cycle counter, sampled around method->execute() to report a
+  // rough inference cost per op.
+  inline volatile uint32_t &reg32(uintptr_t addr)
   {
-     printf(
-        "  size mismatch: got %u vs expected %u bytes\n",
-        static_cast<unsigned>(a_bytes),
-        static_cast<unsigned>(b_bytes));
-    return false;
+    return *reinterpret_cast<volatile uint32_t *>(addr);
+  }
+  constexpr uintptr_t kDemcr = 0xE000EDFC;   // CoreDebug DEMCR, TRCENA = bit 24
+  constexpr uintptr_t kDwtCtrl = 0xE0001000; // DWT_CTRL, CYCCNTENA = bit 0
+  constexpr uintptr_t kDwtCyccnt = 0xE0001004;
+
+  // Per-op stats accumulated during the run and dumped as a table at the end.
+  struct RowStat
+  {
+    const EmbeddedModel *m;
+    bool pass;
+    size_t in_bytes;
+    size_t out_bytes;
+    uint32_t cycles;
+  };
+  constexpr size_t kMaxRows = 512;
+  RowStat g_rows[kMaxRows];
+
+  // Minimal in-memory DataLoader so we do not depend on the extension/ tree
+  // (the pack ships only the runtime/ + kernels).
+  class BufferLoader final : public DataLoader
+  {
+  public:
+    BufferLoader(const void *data, size_t size) : data_(data), size_(size) {}
+
+    Result<FreeableBuffer> load(
+        size_t offset,
+        size_t size,
+        const DataLoader::SegmentInfo &) const override
+    {
+      if (offset + size > size_)
+      {
+        return Error::InvalidArgument;
+      }
+      return FreeableBuffer(
+          static_cast<const uint8_t *>(data_) + offset, size, nullptr);
+    }
+
+    Result<size_t> size() const override
+    {
+      return size_;
+    }
+
+  private:
+    const void *data_;
+    size_t size_;
+  };
+
+
+void print_tensor(const Tensor& t) {
+  printf("shape=[");
+  for (int i = 0; i < t.dim(); ++i) {
+    if (i) printf(", ");
+    printf("%d", t.size(i));
+  }
+  printf("] values=[");
+
+  switch (t.scalar_type()) {
+    case executorch::aten::ScalarType::Float: {
+      const float* p = t.const_data_ptr<float>();
+      for (size_t i = 0; i < t.numel(); ++i) {
+        if (i) printf(", ");
+        printf("%f", p[i]);
+      }
+      break;
+    }
+
+    case executorch::aten::ScalarType::Int: {
+      const int32_t* p = t.const_data_ptr<int32_t>();
+      for (size_t i = 0; i < t.numel(); ++i) {
+        if (i) printf(", ");
+        printf("%d", p[i]);
+      }
+      break;
+    }
+
+    case executorch::aten::ScalarType::Bool: {
+      const bool* p = t.const_data_ptr<bool>();
+      for (size_t i = 0; i < t.numel(); ++i) {
+        if (i) printf(", ");
+        printf("%s", p[i] ? "true" : "false");
+      }
+      break;
+    }
+
+    default:
+      printf("<unsupported dtype>");
+      break;
   }
 
-  const float* pa = a.const_data_ptr<float>();
-  const float* pb = b.const_data_ptr<float>();
+  printf("]\n");
+}
 
-  float max_abs = 0.f;
-  size_t worst = 0;
+  bool tensor_allclose(
+      const Tensor &a,
+      const Tensor &b,
+      double rtol = 1e-6,
+      double atol = 1e-6)
+  {
 
-  bool ok = true;
-  size_t n = a.numel();
-  for (size_t i = 0; i < n; ++i) {
-    float d = std::fabs(pa[i] - pb[i]);
-    if (d > max_abs) {
+    //print_tensor(a);
+    //print_tensor(b);
+    int a_bytes = a.numel() * a.element_size();
+    int b_bytes = b.numel() * b.element_size();
+
+    if (a_bytes != b_bytes)
+    {
+      printf(
+          "  size mismatch: got %u vs expected %u bytes\n",
+          static_cast<unsigned>(a_bytes),
+          static_cast<unsigned>(b_bytes));
+      return false;
+    }
+
+    const float *pa = a.const_data_ptr<float>();
+    const float *pb = b.const_data_ptr<float>();
+
+    float max_abs = 0.f;
+    size_t worst = 0;
+
+    bool ok = true;
+    size_t n = a.numel();
+    for (size_t i = 0; i < n; ++i)
+    {
+      float d = std::fabs(pa[i] - pb[i]);
+      if (d > max_abs)
+      {
         max_abs = d;
         worst = i;
+      }
+      if (d > atol + rtol * std::abs(pb[i]))
+      {
+        ok = false;
+      }
     }
-    if (d > atol + rtol * std::abs(pb[i])) {
-      ok = false;
-    }
-  }
-  printf(
+    printf(
         "  [cmp] %u float(s): max|err|=%g at [%u] (got %f vs exp %f),"
         " atol=%g rtol=%g -> %s\n",
         static_cast<unsigned>(n),
@@ -158,170 +217,175 @@ bool allclose(
         atol,
         rtol,
         ok ? "within tol" : "OUT OF TOL");
-  return ok;
-}
+    return ok;
+  }
 
-bool tensor_equal(
-    const Tensor& a,
-    const Tensor& b) {
+  bool tensor_equal(
+      const Tensor &a,
+      const Tensor &b)
+  {
 
+    //print_tensor(a);
+    //print_tensor(b);
     if (a.scalar_type() != b.scalar_type())
-        return false;
+      return false;
 
     if (a.dim() != b.dim())
-        return false;
+      return false;
 
-    for (int i = 0; i < a.dim(); ++i) {
-        if (a.size(i) != b.size(i))
-            return false;
+    for (int i = 0; i < a.dim(); ++i)
+    {
+      if (a.size(i) != b.size(i))
+        return false;
     }
 
-    size_t nbytes = a.nbytes();  // if available
+    size_t nbytes = a.nbytes(); // if available
     bool ok = std::memcmp(a.const_data_ptr(), b.const_data_ptr(), nbytes) == 0;
     printf(
         "  [cmp] %u byte(s) exact compare -> %s\n",
         static_cast<unsigned>(nbytes),
         ok ? "match" : "MISMATCH");
     return ok;
-}
-
-bool tensors_match(
-    const Tensor& got,
-    const Tensor& expected,
-    float atol,
-    float rtol) {
- 
-  const auto dtype = got.scalar_type();
-  if (dtype == executorch::aten::ScalarType::Float) 
-  {
-    return allclose(got, expected, rtol, atol);
   }
-  else
+
+  bool tensors_match(
+      const Tensor &got,
+      const Tensor &expected,
+      float atol,
+      float rtol)
   {
-    return tensor_equal(got, expected);
-  }
-}
 
-// Runs one embedded model end-to-end, returning true if it produced outputs
-// matching the embedded expected_*.bin within (atol, rtol). Prints
-// "Test_result: <op> PASS" / "FAIL (<stage>)" so a host log parser can
-// aggregate results across the full run.
-bool run_one_model(const EmbeddedModel& m, RowStat& row) {
-  row.m = &m;
-  row.pass = false;
-  row.in_bytes = 0;
-  row.out_bytes = 0;
-  row.cycles = 0;
- 
-
-  auto method_allocator = std::make_unique<MemoryAllocator>(kMethodPoolSize,
-                                                            g_method_pool);
-  auto temp_allocator = std::make_unique<MemoryAllocator>(kTempPoolSize,
-                                                          g_temp_pool);
-
-  auto loader = std::make_unique<BufferLoader>(m.pte_data, m.pte_size);
-  EmbeddedModule module_(m.pte_data,
-                        m.pte_size,
-                        std::move(loader),
-                        std::move(method_allocator),
-                        std::move(temp_allocator));
-
-  
-  size_t num_inputs = 0;
-  auto nb_inputs_ = module_.execute("nb_inputs");
-  if (nb_inputs_.ok())
-     num_inputs = nb_inputs_.get()[0].toInt();
-
-  size_t num_outputs = 0;
-  auto num_outputs_ = module_.execute("nb_outputs");
-  if (!num_outputs_.ok())
-     return false;
-
-  num_outputs = num_outputs_.get()[0].toInt();
-
-  printf(
-      "Test_exec: %s (dir=%s) pte=%u bytes, %u input(s), %u expected\n",
-      m.op,
-      m.dir,
-      static_cast<unsigned>(m.pte_size),
-      static_cast<unsigned>(num_inputs),
-      static_cast<unsigned>(num_outputs));
-
-  char method_name[256];
-
-  for(size_t i = 0; i < num_inputs; ++i) 
-  {
-    sprintf(method_name, "input_%zu", i);
-    auto input_ = module_.execute(method_name);
-    if (input_.ok())
+    const auto dtype = got.scalar_type();
+    if (dtype == executorch::aten::ScalarType::Float)
     {
-      auto input = input_.get()[0];
-      auto error = module_.set_input(input, i);
-      if (error != Error::Ok) {
-        printf("  input %u FAIL (set_input)\n", static_cast<unsigned>(i));
-        return false;
+      return tensor_allclose(got, expected, rtol, atol);
+    }
+    else
+    {
+      return tensor_equal(got, expected);
+    }
+  }
+
+  // Runs one embedded model end-to-end, returning true if it produced outputs
+  // matching the embedded expected_*.bin within (atol, rtol). Prints
+  // "Test_result: <op> PASS" / "FAIL (<stage>)" so a host log parser can
+  // aggregate results across the full run.
+  bool run_one_model(const EmbeddedModel &m, RowStat &row)
+  {
+    row.m = &m;
+    row.pass = false;
+    row.in_bytes = 0;
+    row.out_bytes = 0;
+    row.cycles = 0;
+
+    auto method_allocator = std::make_unique<ArmMemoryAllocator>(kMethodPoolSize,
+                                                              g_method_pool);
+    auto temp_allocator = std::make_unique<ArmMemoryAllocator>(kTempPoolSize,
+                                                            g_temp_pool);
+
+    auto loader = std::make_unique<BufferLoader>(m.pte_data, m.pte_size);
+    EmbeddedModule module_(m.pte_data,
+                           m.pte_size,
+                           std::move(loader),
+                           std::move(method_allocator),
+                           std::move(temp_allocator));
+
+    size_t num_inputs = 0;
+    auto nb_inputs_ = module_.execute("nb_inputs");
+    if (nb_inputs_.ok())
+      num_inputs = nb_inputs_.get()[0].toInt();
+
+    size_t num_outputs = 0;
+    auto num_outputs_ = module_.execute("nb_outputs");
+    if (!num_outputs_.ok())
+      return false;
+
+    num_outputs = num_outputs_.get()[0].toInt();
+
+    printf(
+        "Test_exec: %s (dir=%s) pte=%u bytes, %u input(s), %u expected\n",
+        m.op,
+        m.dir,
+        static_cast<unsigned>(m.pte_size),
+        static_cast<unsigned>(num_inputs),
+        static_cast<unsigned>(num_outputs));
+
+    char method_name[256];
+
+    for (size_t i = 0; i < num_inputs; ++i)
+    {
+      sprintf(method_name, "input_%zu", i);
+      auto input_ = module_.execute(method_name);
+      if (input_.ok())
+      {
+        auto input = input_.get()[0];
+        auto error = module_.set_input(input, i);
+        if (error != Error::Ok)
+        {
+          printf("  input %u FAIL (set_input)\n", static_cast<unsigned>(i));
+          return false;
+        }
       }
     }
-  }
- 
-  printf("  [run] %s execute() ...\n", m.op);
-  uint32_t c0 = reg32(kDwtCyccnt);
-  const auto result = module_.forward();
-  row.cycles = reg32(kDwtCyccnt) - c0;
-  if (!result.ok())
-  {
-    printf("Test_result: %s FAIL (execute)\n", m.op);
-    return false;
-  }
 
- 
-
-  printf(
-      "  [run] %s execute() ok, %u output(s)\n",
-      m.op,
-      static_cast<unsigned>(num_outputs));
-  bool pass = true;
-
-  float atol = 0;
-  auto atol_ = module_.execute("atol");
-  if (!atol_.ok())
-     return false;
-  atol = static_cast<float>(atol_.get()[0].toDouble());
-
-  float rtol = 0;
-  auto rtol_ = module_.execute("rtol");
-  if (!rtol_.ok())
-     return false;
-  rtol = static_cast<float>(rtol_.get()[0].toDouble());
-
-  for (size_t i = 0; i < num_outputs; ++i) 
-  {
-    const auto got = result->at(i).toTensor();
-    
-    sprintf(method_name, "output_%zu", i);
-    auto output_ = module_.execute(method_name);
-    if (!output_.ok())
+    printf("  [run] %s execute() ...\n", m.op);
+    uint32_t c0 = reg32(kDwtCyccnt);
+    const auto result = module_.forward();
+    row.cycles = reg32(kDwtCyccnt) - c0;
+    if (!result.ok())
     {
-      printf("  output %u FAIL (get_output)\n", static_cast<unsigned>(i));
-      pass = false;
-      continue;
+      printf("Test_result: %s FAIL (execute)\n", m.op);
+      return false;
     }
-    const auto expected = output_.get()[0].toTensor();
-    
-    if (!tensors_match(got, expected, atol, rtol)) {
-      printf("  output %u mismatch\n", static_cast<unsigned>(i));
-      pass = false;
-    }
-  }
 
-  row.pass = pass;
-  printf("Test_result: %s %s\n", m.op, pass ? "PASS" : "FAIL");
-  return pass;
-}
+    printf(
+        "  [run] %s execute() ok, %u output(s)\n",
+        m.op,
+        static_cast<unsigned>(num_outputs));
+    bool pass = true;
+
+    float atol = 0;
+    auto atol_ = module_.execute("atol");
+    if (!atol_.ok())
+      return false;
+    atol = static_cast<float>(atol_.get()[0].toDouble());
+
+    float rtol = 0;
+    auto rtol_ = module_.execute("rtol");
+    if (!rtol_.ok())
+      return false;
+    rtol = static_cast<float>(rtol_.get()[0].toDouble());
+
+    for (size_t i = 0; i < num_outputs; ++i)
+    {
+      const auto got = result->at(i).toTensor();
+
+      sprintf(method_name, "output_%zu", i);
+      auto output_ = module_.execute(method_name);
+      if (!output_.ok())
+      {
+        printf("  output %u FAIL (get_output)\n", static_cast<unsigned>(i));
+        pass = false;
+        continue;
+      }
+      const auto expected = output_.get()[0].toTensor();
+
+      if (!tensors_match(got, expected, atol, rtol))
+      {
+        printf("  output %u mismatch\n", static_cast<unsigned>(i));
+        pass = false;
+      }
+    }
+
+    row.pass = pass;
+    printf("Test_result: %s %s\n", m.op, pass ? "PASS" : "FAIL");
+    return pass;
+  }
 
 } // namespace
 
-int main(void) {
+int main(void)
+{
   // Unbuffered stdout: the bare-metal startup may loop after main() returns
   // (never calling exit()), so block-buffered output would never flush. Make
   // every printf reach the semihosting console immediately.
@@ -336,9 +400,11 @@ int main(void) {
 
   size_t passed = 0;
   const size_t total = g_embedded_models_count;
-  for (size_t mi = 0; mi < total; ++mi) {
-    RowStat& row = g_rows[mi < kMaxRows ? mi : kMaxRows - 1];
-    if (run_one_model(g_embedded_models[mi], row)) {
+  for (size_t mi = 0; mi < total; ++mi)
+  {
+    RowStat &row = g_rows[mi < kMaxRows ? mi : kMaxRows - 1];
+    if (run_one_model(g_embedded_models[mi], row))
+    {
       ++passed;
     }
   }
@@ -353,8 +419,9 @@ int main(void) {
       "in(B)",
       "out(B)",
       "cycles");
-  for (size_t mi = 0; mi < total && mi < kMaxRows; ++mi) {
-    const RowStat& r = g_rows[mi];
+  for (size_t mi = 0; mi < total && mi < kMaxRows; ++mi)
+  {
+    const RowStat &r = g_rows[mi];
     printf(
         "%-30s %-6s %10u %8u %8u %12u\n",
         r.m->op,

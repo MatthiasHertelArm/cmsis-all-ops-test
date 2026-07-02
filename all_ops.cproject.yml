@@ -272,6 +272,7 @@ project:
         # export step has not run, so build/link coverage works without torch.
         - file: ./embedded_models.cpp
         - file: ./arm_embedded_module.cpp
+        - file: ./arm_memory_allocator.cpp
         - file: ./embedded_models_blob.S
         - file: ./stdout_semihosting.c
         - file: ./et_pal_override.cpp
