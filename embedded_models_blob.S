@@ -5,48 +5,48 @@
     .balign 16
     .global _emb_pte_portable__abs_start
 _emb_pte_portable__abs_start:
-    .incbin "models/portable__abs/model.pte"
+    .incbin "models/portable__abs.pte"
     .global _emb_pte_portable__abs_end
 _emb_pte_portable__abs_end:
 
     .balign 16
     .global _emb_pte_portable__add_start
 _emb_pte_portable__add_start:
-    .incbin "models/portable__add/model.pte"
+    .incbin "models/portable__add.pte"
     .global _emb_pte_portable__add_end
 _emb_pte_portable__add_end:
 
     .balign 16
     .global _emb_pte_portable__bitwise_and_start
 _emb_pte_portable__bitwise_and_start:
-    .incbin "models/portable__bitwise_and/model.pte"
+    .incbin "models/portable__bitwise_and.pte"
     .global _emb_pte_portable__bitwise_and_end
 _emb_pte_portable__bitwise_and_end:
 
     .balign 16
     .global _emb_pte_portable__eq_start
 _emb_pte_portable__eq_start:
-    .incbin "models/portable__eq/model.pte"
+    .incbin "models/portable__eq.pte"
     .global _emb_pte_portable__eq_end
 _emb_pte_portable__eq_end:
 
     .balign 16
     .global _emb_pte_portable__logical_and_start
 _emb_pte_portable__logical_and_start:
-    .incbin "models/portable__logical_and/model.pte"
+    .incbin "models/portable__logical_and.pte"
     .global _emb_pte_portable__logical_and_end
 _emb_pte_portable__logical_and_end:
 
     .balign 16
     .global _emb_pte_portable__logical_not_start
 _emb_pte_portable__logical_not_start:
-    .incbin "models/portable__logical_not/model.pte"
+    .incbin "models/portable__logical_not.pte"
     .global _emb_pte_portable__logical_not_end
 _emb_pte_portable__logical_not_end:
 
     .balign 16
     .global _emb_pte_cortex_m__quantized_add_start
 _emb_pte_cortex_m__quantized_add_start:
-    .incbin "models/cortex_m__quantized_add/model.pte"
+    .incbin "models/cortex_m__quantized_add.pte"
     .global _emb_pte_cortex_m__quantized_add_end
 _emb_pte_cortex_m__quantized_add_end:

@@ -105,23 +105,23 @@ def build(models_dir: Path, output_dir: Path) -> tuple[str, str, str, int, int]:
     n_bytes = 0
 
     for entry in manifest:
-        d = entry["dir"]
+        name = entry["name"]
         op = entry["op"]
-        if not (models_dir / d / "model.pte").exists():
-            print(f"warning: missing {models_dir / d / 'model.pte'}", file=sys.stderr)
+        if not (models_dir / name  ).with_suffix(".pte").exists():
+            print(f"warning: missing {(models_dir / name).with_suffix('.pte')}", file=sys.stderr)
             continue
 
         cpp_lines.append('extern "C" {')
 
-        def emit(prefix: str, fname: str, suffix: str = "", d: str = d) -> bool:
+        def emit(prefix: str, fname: str, suffix: str = "") -> bool:
             nonlocal n_bytes
-            disk = models_dir / d / fname
+            disk = (models_dir / fname).with_suffix(".pte")
             if not disk.exists():
                 print(f"warning: missing {disk}", file=sys.stderr)
                 return False
             n_bytes += disk.stat().st_size
-            s = _sym(prefix, d, suffix)
-            incbin = (rel_models / d / fname).as_posix()
+            s = _sym(prefix, name, suffix)
+            incbin = (rel_models / fname).with_suffix(".pte").as_posix()
             s_lines.extend(
                 [
                     "    .balign 16",
@@ -141,16 +141,16 @@ def build(models_dir: Path, output_dir: Path) -> tuple[str, str, str, int, int]:
             )
             return True
 
-        emit("pte", "model.pte")
+        emit("pte", name)
         
 
         cpp_lines.append('}  // extern "C"')
         cpp_lines.append("")
         
 
-        pte = _sym("pte", d)
+        pte = _sym("pte", name)
         table_entries.append(
-            f'    {{ "{op}", "{d}",\n'
+            f'    {{ "{op}", "{name}",\n'
             f"      {pte}_start, static_cast<std::size_t>({pte}_end - {pte}_start),\n"
             f"    }},"
         )

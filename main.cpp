@@ -3,20 +3,28 @@
 // This source code is licensed under the BSD-style license found in the
 // LICENSE file in the root directory of this source tree.
 //
-// All-ops consumer runner, built entirely from the CMSIS Pack's ExecuTorch
-// runtime + kernel components.
-//
-// Dual purpose:
-//   * Build/link coverage -- all_ops.cproject.yml selects every operator
-//     component, so linking this image exercises every op's generated
-//     registration, forward declaration and kernel source.
-//   * Execution coverage -- every model produced by generate_test_models.py
-//     is embedded directly into the ELF (.rodata) via embedded_models.S, so
-//     this image self-tests on bare metal without semihosting access to the
-//     host filesystem. Iterates over every model.pte / input_*.bin /
-//     expected_*.bin, prints "PASS"/"FAIL" per op, and a final aggregate.
-//
-// API usage mirrors examples/arm/executor_runner/arm_executor_runner.cpp.
+/**
+ * @file main.cpp
+ * @brief Bare-metal all-operators ExecuTorch test runner.
+ *
+ * This executable is built entirely from the CMSIS Pack's ExecuTorch runtime
+ * and kernel components.
+ *
+ * The runner has two purposes:
+ * - Build/link coverage: all_ops.cproject.yml selects every operator
+ *   component, so linking this image exercises every operator's generated
+ *   registration, forward declaration, and kernel source.
+ * - Execution coverage: every model produced by generate_test_models.py is
+ *   embedded directly into the ELF (.rodata) via embedded_models.S. The image
+ *   can therefore self-test on bare metal without semihosting access to the
+ *   host filesystem.
+ *
+ * For each embedded model, the runner executes model.pte, loads its generated
+ * input_* methods, compares the output tensors against expected_* methods, and
+ * prints a per-operator PASS/FAIL result plus a final aggregate summary.
+ *
+ * API usage mirrors examples/arm/executor_runner/arm_executor_runner.cpp.
+ */
 
 #include <cmath>
 #include <cstdint>
@@ -61,41 +69,97 @@ using namespace arm::embedded;
 namespace
 {
 
+  /** @brief Static arena used by ExecuTorch for method lifetime allocations. */
   constexpr size_t kMethodPoolSize = 16 * 1024 * 1024;
+
+  /** @brief Static arena used by ExecuTorch for temporary execution memory. */
   constexpr size_t kTempPoolSize = 4 * 1024 * 1024;
 
+  /** @brief Backing storage for the method allocator. */
   alignas(16) uint8_t g_method_pool[kMethodPoolSize];
+
+  /** @brief Backing storage for the temporary allocator. */
   alignas(16) uint8_t g_temp_pool[kTempPoolSize];
 
-  // Cortex-M55 DWT cycle counter, sampled around method->execute() to report a
-  // rough inference cost per op.
+  /**
+   * @brief Returns a reference to a memory-mapped 32-bit hardware register.
+   *
+   * Used for CoreDebug and DWT cycle-counter registers. The return type is
+   * volatile so reads and writes are emitted exactly where requested.
+   *
+   * @param addr Register address.
+   * @return Reference to the register at @p addr.
+   */
   inline volatile uint32_t &reg32(uintptr_t addr)
   {
     return *reinterpret_cast<volatile uint32_t *>(addr);
   }
+
+  /** @brief CoreDebug DEMCR register; bit 24 enables trace/DWT access. */
   constexpr uintptr_t kDemcr = 0xE000EDFC;   // CoreDebug DEMCR, TRCENA = bit 24
+
+  /** @brief DWT_CTRL register; bit 0 enables CYCCNT. */
   constexpr uintptr_t kDwtCtrl = 0xE0001000; // DWT_CTRL, CYCCNTENA = bit 0
+
+  /** @brief DWT cycle-count register sampled around model execution. */
   constexpr uintptr_t kDwtCyccnt = 0xE0001004;
 
-  // Per-op stats accumulated during the run and dumped as a table at the end.
+  /**
+   * @brief Per-model result row printed in the final summary table.
+   */
   struct RowStat
   {
+    /** @brief Embedded model metadata for the tested operator. */
     const EmbeddedModel *m;
+
+    /** @brief True when all outputs matched their expected tensors. */
     bool pass;
+
+    /** @brief Input-byte summary column for this model row. */
     size_t in_bytes;
+
+    /** @brief Output-byte summary column for this model row. */
     size_t out_bytes;
+
+    /** @brief DWT cycles spent in the model forward pass. */
     uint32_t cycles;
   };
+
+  /** @brief Maximum number of per-model rows retained for final reporting. */
   constexpr size_t kMaxRows = 512;
+
+  /** @brief Summary rows accumulated as embedded models are executed. */
   RowStat g_rows[kMaxRows];
 
-  // Minimal in-memory DataLoader so we do not depend on the extension/ tree
-  // (the pack ships only the runtime/ + kernels).
+  /**
+   * @brief ExecuTorch DataLoader backed by a read-only in-memory buffer.
+   *
+   * The CMSIS Pack ships runtime and kernel components, but not the extension/
+   * filesystem helpers. This loader lets Program read embedded .pte bytes
+   * directly from flash/rodata.
+   */
   class BufferLoader final : public DataLoader
   {
   public:
+    /**
+     * @brief Creates a loader over a contiguous model buffer.
+     *
+     * @param data Pointer to the first byte of the embedded .pte.
+     * @param size Number of bytes available at @p data.
+     */
     BufferLoader(const void *data, size_t size) : data_(data), size_(size) {}
 
+    /**
+     * @brief Returns a view over a requested model segment.
+     *
+     * ExecuTorch calls this while parsing the program. No ownership transfer is
+     * needed because the backing storage is embedded in the image for the whole
+     * process lifetime.
+     *
+     * @param offset First byte requested within the model buffer.
+     * @param size Number of bytes requested.
+     * @return FreeableBuffer view, or Error::InvalidArgument if out of range.
+     */
     Result<FreeableBuffer> load(
         size_t offset,
         size_t size,
@@ -109,6 +173,7 @@ namespace
           static_cast<const uint8_t *>(data_) + offset, size, nullptr);
     }
 
+    /** @brief Returns the total size of the embedded program buffer. */
     Result<size_t> size() const override
     {
       return size_;
@@ -119,7 +184,15 @@ namespace
     size_t size_;
   };
 
-
+  /**
+   * @brief Prints a tensor's shape and scalar values for manual debugging.
+   *
+   * This helper is intentionally unused in normal PASS/FAIL logs because some
+   * generated test tensors are large. It is useful when locally uncommenting
+   * calls in the comparison helpers.
+   *
+   * @param t Tensor to print.
+   */
 void print_tensor(const Tensor& t) {
   printf("shape=[");
   for (int i = 0; i < t.dim(); ++i) {
@@ -164,6 +237,19 @@ void print_tensor(const Tensor& t) {
   printf("]\n");
 }
 
+  /**
+   * @brief Compares two floating-point tensors using absolute/relative error.
+   *
+   * Shape and dtype checks are performed by the caller; this routine treats the
+   * tensor storage as float data and reports the largest observed error to make
+   * mismatches easier to diagnose from a serial log.
+   *
+   * @param a Actual tensor produced by the model.
+   * @param b Expected tensor embedded with the model.
+   * @param rtol Relative tolerance.
+   * @param atol Absolute tolerance.
+   * @return true when every element is within tolerance.
+   */
   bool tensor_allclose(
       const Tensor &a,
       const Tensor &b,
@@ -220,6 +306,16 @@ void print_tensor(const Tensor& t) {
     return ok;
   }
 
+  /**
+   * @brief Compares two non-floating tensors for exact dtype, shape, and bytes.
+   *
+   * Integer, boolean, and quantized outputs are deterministic for these tests,
+   * so byte-for-byte comparison gives the most useful result.
+   *
+   * @param a Actual tensor produced by the model.
+   * @param b Expected tensor embedded with the model.
+   * @return true when dtype, shape, and payload bytes all match.
+   */
   bool tensor_equal(
       const Tensor &a,
       const Tensor &b)
@@ -248,6 +344,18 @@ void print_tensor(const Tensor& t) {
     return ok;
   }
 
+  /**
+   * @brief Dispatches tensor comparison based on scalar type.
+   *
+   * Floating-point outputs use model-specific tolerances. All other scalar
+   * types are compared exactly.
+   *
+   * @param got Tensor returned by the model forward pass.
+   * @param expected Tensor returned by the generated expected-output method.
+   * @param atol Absolute tolerance for floating-point outputs.
+   * @param rtol Relative tolerance for floating-point outputs.
+   * @return true when @p got matches @p expected.
+   */
   bool tensors_match(
       const Tensor &got,
       const Tensor &expected,
@@ -266,10 +374,21 @@ void print_tensor(const Tensor& t) {
     }
   }
 
-  // Runs one embedded model end-to-end, returning true if it produced outputs
-  // matching the embedded expected_*.bin within (atol, rtol). Prints
-  // "Test_result: <op> PASS" / "FAIL (<stage>)" so a host log parser can
-  // aggregate results across the full run.
+  /**
+   * @brief Runs one embedded model end-to-end and records its result.
+   *
+   * The generated .pte contains small helper methods named nb_inputs,
+   * nb_outputs, input_N, output_N, atol, and rtol. This function executes those
+   * helpers to discover the test shape, populate model inputs, retrieve the
+   * expected outputs, and choose comparison tolerances.
+   *
+   * The log format intentionally includes "Test_result: <op> PASS/FAIL" lines
+   * so a host-side parser can aggregate results across a full bare-metal run.
+   *
+   * @param m Embedded model and metadata to execute.
+   * @param row Output summary row populated for the final table.
+   * @return true when every model output matched its expected tensor.
+   */
   bool run_one_model(const EmbeddedModel &m, RowStat &row)
   {
     row.m = &m;
@@ -384,6 +503,13 @@ void print_tensor(const Tensor& t) {
 
 } // namespace
 
+/**
+ * @brief Program entry point for the all-operators test image.
+ *
+ * Initializes ExecuTorch, enables the Cortex-M DWT cycle counter, executes each
+ * embedded model in sequence, and prints both per-operator and aggregate test
+ * results. A zero return value means every embedded model passed.
+ */
 int main(void)
 {
   // Unbuffered stdout: the bare-metal startup may loop after main() returns
