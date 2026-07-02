@@ -44,6 +44,7 @@
 #include <executorch/runtime/executor/method.h>
 #include <executorch/runtime/executor/program.h>
 #include <executorch/runtime/platform/runtime.h>
+#include <executorch/extension/tensor/tensor_ptr.h>
 
 
 #include "embedded_models.h"
@@ -437,13 +438,17 @@ void print_tensor(const Tensor& t) {
       auto input_ = module_.execute(method_name);
       if (input_.ok())
       {
-        auto input = input_.get()[0];
+        auto input = input_.get()[0].toTensor();
+        //print_tensor(input);
+
+        
         auto error = module_.set_input(input, i);
         if (error != Error::Ok)
         {
           printf("  input %u FAIL (set_input)\n", static_cast<unsigned>(i));
           return false;
         }
+        
       }
     }
 
@@ -478,7 +483,8 @@ void print_tensor(const Tensor& t) {
     for (size_t i = 0; i < num_outputs; ++i)
     {
       const auto got = result->at(i).toTensor();
-
+      //print_tensor(got);
+      
       sprintf(method_name, "output_%zu", i);
       auto output_ = module_.execute(method_name);
       if (!output_.ok())
@@ -487,13 +493,15 @@ void print_tensor(const Tensor& t) {
         pass = false;
         continue;
       }
+     
       const auto expected = output_.get()[0].toTensor();
-
+      //print_tensor(expected);
       if (!tensors_match(got, expected, atol, rtol))
       {
         printf("  output %u mismatch\n", static_cast<unsigned>(i));
         pass = false;
       }
+      
     }
 
     row.pass = pass;
