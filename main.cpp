@@ -185,6 +185,24 @@ namespace
     size_t size_;
   };
 
+  inline bool is_channels_last_tensor(const Tensor& tensor) {
+  if (tensor.dim() != 4) {
+    return false;
+  }
+
+  // When channels or spatial dims are 1 the layout information is ambiguous.
+  if (tensor.size(1) == 1 || (tensor.size(2) == 1 && tensor.size(3) == 1)) {
+    return true;
+  }
+
+  constexpr executorch::aten::DimOrderType kChannelsLastDimOrder[] = {
+      0, 2, 3, 1};
+  executorch::aten::ArrayRef<executorch::aten::DimOrderType>
+      channels_last_order(kChannelsLastDimOrder, 4);
+
+  return tensor.dim_order() == channels_last_order;
+}
+
   /**
    * @brief Prints a tensor's shape and scalar values for manual debugging.
    *
@@ -375,6 +393,79 @@ void print_tensor(const Tensor& t) {
     }
   }
 
+
+using executorch::aten::DimOrderType;
+using executorch::aten::SizesType;
+using executorch::aten::StridesType;
+using executorch::aten::Tensor;
+using executorch::extension::TensorPtr;
+using executorch::extension::make_tensor_ptr;
+
+TensorPtr to_channels_last_4d_float(const Tensor& in) {
+  ET_CHECK(in.dim() == 4);
+
+  const SizesType N = in.size(0);
+  const SizesType C = in.size(1);
+  const SizesType H = in.size(2);
+  const SizesType W = in.size(3);
+
+  std::vector<SizesType> sizes = {N, C, H, W};
+
+  std::vector<DimOrderType> dim_order = {
+      static_cast<DimOrderType>(0),
+      static_cast<DimOrderType>(2),
+      static_cast<DimOrderType>(3),
+      static_cast<DimOrderType>(1),
+  };
+
+  std::vector<StridesType> strides = {
+      static_cast<StridesType>(H * W * C),
+      static_cast<StridesType>(1),
+      static_cast<StridesType>(W * C),
+      static_cast<StridesType>(C),
+  };
+
+  std::vector<float> out_data(
+      static_cast<size_t>(N) *
+      static_cast<size_t>(C) *
+      static_cast<size_t>(H) *
+      static_cast<size_t>(W));
+
+  const float* in_data = in.const_data_ptr<float>();
+
+  // in.strides() returns ArrayRef<StridesType>, not a pointer.
+  const auto in_strides = in.strides();
+
+  for (SizesType n = 0; n < N; ++n) {
+    for (SizesType c = 0; c < C; ++c) {
+      for (SizesType h = 0; h < H; ++h) {
+        for (SizesType w = 0; w < W; ++w) {
+          const auto in_offset =
+              n * in_strides[0] +
+              c * in_strides[1] +
+              h * in_strides[2] +
+              w * in_strides[3];
+
+          const auto out_offset =
+              n * strides[0] +
+              c * strides[1] +
+              h * strides[2] +
+              w * strides[3];
+
+          out_data[static_cast<size_t>(out_offset)] =
+              in_data[static_cast<size_t>(in_offset)];
+        }
+      }
+    }
+  }
+
+  return make_tensor_ptr<float>(
+      std::move(sizes),
+      std::move(out_data),
+      std::move(dim_order),
+      std::move(strides));
+}
+
   /**
    * @brief Runs one embedded model end-to-end and records its result.
    *
@@ -422,6 +513,13 @@ void print_tensor(const Tensor& t) {
 
     num_outputs = num_outputs_.get()[0].toInt();
 
+    bool channel_last = false;
+    auto channel_last_ = module_.execute("channel_last");
+    if (channel_last_.ok())
+      channel_last = channel_last_.get()[0].toBool();
+    printf("channel_last=%s\n", channel_last ? "true" : "false");
+
+
     printf(
         "Test_exec: %s (dir=%s) pte=%u bytes, %u input(s), %u expected\n",
         m.op,
@@ -440,9 +538,14 @@ void print_tensor(const Tensor& t) {
       {
         auto input = input_.get()[0].toTensor();
         //print_tensor(input);
+        TensorPtr input_ptr = make_tensor_ptr(input);
+        if (channel_last) 
+        {
+           input_ptr = to_channels_last_4d_float(input);
+        };
 
         
-        auto error = module_.set_input(input, i);
+        auto error = module_.set_input(*input_ptr, i);
         if (error != Error::Ok)
         {
           printf("  input %u FAIL (set_input)\n", static_cast<unsigned>(i));
@@ -496,7 +599,13 @@ void print_tensor(const Tensor& t) {
      
       const auto expected = output_.get()[0].toTensor();
       //print_tensor(expected);
-      if (!tensors_match(got, expected, atol, rtol))
+      TensorPtr expected_ptr = make_tensor_ptr(expected);
+      if (channel_last)
+      {
+        expected_ptr = to_channels_last_4d_float(expected);
+      };
+
+      if (!tensors_match(got, *expected_ptr, atol, rtol))
       {
         printf("  output %u mismatch\n", static_cast<unsigned>(i));
         pass = false;
@@ -570,5 +679,5 @@ int main(void)
       "Test_result: SUMMARY %u/%u PASS\n",
       static_cast<unsigned>(passed),
       static_cast<unsigned>(total));
-  return passed == total ? 0 : 1;
+  exit(passed == total ? 0 : 1);
 }

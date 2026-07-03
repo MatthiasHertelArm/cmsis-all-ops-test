@@ -276,3 +276,4 @@ project:
         - file: ./embedded_models_blob.S
         - file: ./stdout_semihosting.c
         - file: ./et_pal_override.cpp
+        - file: ./exit_semihosting.c
