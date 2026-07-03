@@ -532,7 +532,7 @@ TensorPtr to_channels_last_4d_float(const Tensor& in) {
 
     for (size_t i = 0; i < num_inputs; ++i)
     {
-      sprintf(method_name, "input_%zu", i);
+      sprintf(method_name, "input_%d", i);
       auto input_ = module_.execute(method_name);
       if (input_.ok())
       {
@@ -588,7 +588,7 @@ TensorPtr to_channels_last_4d_float(const Tensor& in) {
       const auto got = result->at(i).toTensor();
       //print_tensor(got);
       
-      sprintf(method_name, "output_%zu", i);
+      sprintf(method_name, "output_%d", i);
       auto output_ = module_.execute(method_name);
       if (!output_.ok())
       {
