@@ -40,10 +40,11 @@ Ethos-U backend component.
 
 ## Prerequisites
 
-- [CMSIS-Toolbox](https://github.com/Open-CMSIS-Pack/cmsis-toolbox) ≥ 2.13
+- [CMSIS-Toolbox](https://github.com/Open-CMSIS-Pack/cmsis-toolbox) ≥ 2.14
   (`cbuild`, `csolution`, `cpackget`)
 - A toolchain: `arm-none-eabi-gcc` 14.x (GCC), Arm Compiler 6 (AC6), or Arm
   Toolchain for Embedded / LLVM (CLANG)
+- CLANG requires CMSIS-Toolbox ≥ 2.14
 - These packs installed (declared in [all_ops.csolution.yml](all_ops.csolution.yml)):
   `PyTorch::ExecuTorch`, `ARM::CMSIS`, `ARM::Cortex_DFP`, `ARM::CMSIS-NN`,
   **`ARM::CMSIS-Compiler`**:
