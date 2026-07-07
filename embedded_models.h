@@ -3,22 +3,11 @@
 
 #include <cstddef>
 
-struct EmbeddedBuffer {
-    const unsigned char* data;
-    std::size_t size;
-};
-
 struct EmbeddedModel {
     const char* op;
     const char* dir;
     const unsigned char* pte_data;
     std::size_t pte_size;
-    const EmbeddedBuffer* inputs;
-    std::size_t num_inputs;
-    const EmbeddedBuffer* expected;
-    std::size_t num_outputs;
-    float atol;
-    float rtol;
 };
 
 extern const EmbeddedModel g_embedded_models[];

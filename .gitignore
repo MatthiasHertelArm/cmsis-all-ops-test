@@ -7,6 +7,8 @@ tmp/
 *.cbuild-set.yml
 *.cbuild-run.yml
 __pycache__/
+run.sh
+
 
 # models/, all_ops.cproject.yml and embedded_models_blob.S / embedded_models.{cpp,h}
 # are checked in here so the project builds standalone (the upstream generators
