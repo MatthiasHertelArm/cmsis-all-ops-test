@@ -8,15 +8,21 @@
 Reads ``models/manifest.json`` (produced by generate_test_models.py) and emits
 three sources the consumer build compiles in:
 
-  * embedded_models_blob.S  -- ``.incbin`` of each model.pte / input_*.bin /
-    expected_*.bin into .rodata, so the image is self-contained and needs no
-    semihosting filesystem access at run time. (The ``.S`` stem is distinct
-    from embedded_models.cpp to avoid AC6's cbuild2cmake object-name clash.)
+  * embedded_models_blob.S  -- ``.incbin`` of each <name>.pte into .rodata, so
+    the image is self-contained and needs no semihosting filesystem access at
+    run time. (The ``.S`` stem is distinct from embedded_models.cpp to avoid
+    AC6's cbuild2cmake object-name clash.)
   * embedded_models.cpp     -- the g_embedded_models[] table referencing the
-    blob symbols, plus per-model input/expected arrays.
-  * embedded_models.h       -- the EmbeddedModel/EmbeddedBuffer structs.
+    blob symbols.
+  * embedded_models.h       -- the EmbeddedModel struct.
 
-The ``.incbin`` paths are RELATIVE to this directory (``models/<dir>/<file>``).
+Each test is fully self-contained in its .pte: besides the model, the program
+carries constant methods (nb_inputs, nb_outputs, atol, rtol, channel_last,
+input_<i>, output_<i>) that main.cpp executes to discover inputs, expected
+outputs and tolerances. The manifest therefore only maps op/category to a
+.pte file name; there are no side-band .bin files.
+
+The ``.incbin`` paths are RELATIVE to this directory (``models/<name>.pte``).
 The consumer project carries ``add-path: [.]`` -> ``-I<project-dir>``, which the
 assembler searches for ``.incbin``, so the same generated file resolves whether
 the build runs on the host or inside the Docker build container (host absolute
@@ -24,7 +30,7 @@ paths would not exist in the container).
 
 If ``models/manifest.json`` is absent (build/link-coverage only, no torch
 export step), a valid empty stub is emitted so the image still links and runs
-(reporting 0/0). Re-run whenever the manifest or any model dir changes.
+(reporting 0/0). Re-run whenever the manifest or any model changes.
 
 """
 
@@ -44,22 +50,11 @@ _H_CONTENT = """\
 
 #include <cstddef>
 
-struct EmbeddedBuffer {
-    const unsigned char* data;
-    std::size_t size;
-};
-
 struct EmbeddedModel {
     const char* op;
-    const char* dir;
+    const char* category;
     const unsigned char* pte_data;
     std::size_t pte_size;
-    const EmbeddedBuffer* inputs;
-    std::size_t num_inputs;
-    const EmbeddedBuffer* expected;
-    std::size_t num_outputs;
-    float atol;
-    float rtol;
 };
 
 extern const EmbeddedModel g_embedded_models[];
@@ -75,7 +70,7 @@ _CPP_STUB = """\
 #include "embedded_models.h"
 
 const EmbeddedModel g_embedded_models[] = {
-    { "", "", nullptr, 0, nullptr, 0, nullptr, 0, 0.0f, 0.0f },
+    { "", "", nullptr, 0 },
 };
 const std::size_t g_embedded_models_count = 0;
 """
@@ -86,9 +81,8 @@ _S_STUB = """\
 """
 
 
-def _sym(prefix: str, dirname: str, suffix: str = "") -> str:
-    name = f"_emb_{prefix}_{dirname}"
-    return f"{name}_{suffix}" if suffix else name
+def _sym(name: str) -> str:
+    return f"_emb_pte_{name}"
 
 
 def build(models_dir: Path, output_dir: Path) -> tuple[str, str, str, int, int]:
@@ -117,75 +111,37 @@ def build(models_dir: Path, output_dir: Path) -> tuple[str, str, str, int, int]:
     n_bytes = 0
 
     for entry in manifest:
-        d = entry["dir"]
+        name = entry["name"]
         op = entry["op"]
-        atol = float(entry.get("atol", 1e-3))
-        rtol = float(entry.get("rtol", 1e-3))
-        if not (models_dir / d / "model.pte").exists():
-            print(f"warning: missing {models_dir / d / 'model.pte'}", file=sys.stderr)
+        category = entry["category"]
+        disk = models_dir / f"{name}.pte"
+        if not disk.exists():
+            print(f"warning: missing {disk}", file=sys.stderr)
             continue
 
-        def emit(prefix: str, fname: str, suffix: str = "", d: str = d) -> bool:
-            nonlocal n_bytes
-            disk = models_dir / d / fname
-            if not disk.exists():
-                print(f"warning: missing {disk}", file=sys.stderr)
-                return False
-            n_bytes += disk.stat().st_size
-            s = _sym(prefix, d, suffix)
-            incbin = (rel_models / d / fname).as_posix()
-            s_lines.extend(
-                [
-                    "    .balign 16",
-                    f"    .global {s}_start",
-                    f"{s}_start:",
-                    f'    .incbin "{incbin}"',
-                    f"    .global {s}_end",
-                    f"{s}_end:",
-                    "",
-                ]
-            )
-            cpp_lines.extend(
-                [
-                    f"extern const unsigned char {s}_start[];",
-                    f"extern const unsigned char {s}_end[];",
-                ]
-            )
-            return True
-
-        emit("pte", "model.pte")
-        inputs = entry.get("inputs", [])
-        outputs = entry.get("outputs", [])
-        for i, inp in enumerate(inputs):
-            emit("in", inp["file"], str(i))
-        for i, out in enumerate(outputs):
-            emit("exp", out["file"], str(i))
-
-        cpp_lines.append('}  // extern "C"')
-        cpp_lines.append("")
-        cpp_lines.append(f"static const EmbeddedBuffer kInputs_{d}[] = {{")
-        for i in range(len(inputs)):
-            s = _sym("in", d, str(i))
-            cpp_lines.append(
-                f"    {{ {s}_start, static_cast<std::size_t>({s}_end - {s}_start) }},"
-            )
-        cpp_lines.append("};")
-        cpp_lines.append(f"static const EmbeddedBuffer kExpected_{d}[] = {{")
-        for i in range(len(outputs)):
-            s = _sym("exp", d, str(i))
-            cpp_lines.append(
-                f"    {{ {s}_start, static_cast<std::size_t>({s}_end - {s}_start) }},"
-            )
-        cpp_lines.append("};")
-        cpp_lines.append('extern "C" {')
-
-        pte = _sym("pte", d)
+        n_bytes += disk.stat().st_size
+        s = _sym(name)
+        incbin = (rel_models / f"{name}.pte").as_posix()
+        s_lines.extend(
+            [
+                "    .balign 16",
+                f"    .global {s}_start",
+                f"{s}_start:",
+                f'    .incbin "{incbin}"',
+                f"    .global {s}_end",
+                f"{s}_end:",
+                "",
+            ]
+        )
+        cpp_lines.extend(
+            [
+                f"extern const unsigned char {s}_start[];",
+                f"extern const unsigned char {s}_end[];",
+            ]
+        )
         table_entries.append(
-            f'    {{ "{op}", "{d}",\n'
-            f"      {pte}_start, static_cast<std::size_t>({pte}_end - {pte}_start),\n"
-            f"      kInputs_{d}, {len(inputs)},\n"
-            f"      kExpected_{d}, {len(outputs)},\n"
-            f"      {atol}f, {rtol}f }},"
+            f'    {{ "{op}", "{category}",\n'
+            f"      {s}_start, static_cast<std::size_t>({s}_end - {s}_start) }},"
         )
 
     cpp_lines.append('}  // extern "C"')
@@ -215,7 +171,7 @@ def main() -> int:
     parser.add_argument(
         "--models-dir",
         default=str(_HERE / "models"),
-        help="directory with per-op model dirs + manifest.json",
+        help="directory with per-op .pte files + manifest.json",
     )
     parser.add_argument(
         "--output-dir",
