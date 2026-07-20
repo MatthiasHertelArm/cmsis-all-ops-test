@@ -24,10 +24,10 @@ project:
     - ../cpu
 
   # add-path is C/C++ only; the assembler needs add-path-asm so
-  # embedded_models_blob.S resolves its relative `.incbin "models/..."` paths
-  # regardless of the build working directory.
+  # embedded_models_blob.S resolves its relative `.incbin "models/..."` paths.
+  # This context embeds its OWN M7 (DSP-sized scratch) models, so point at ".".
   add-path-asm:
-    - ../cpu
+    - .
 
   components:
     - component: ARM::CMSIS:CORE
@@ -260,8 +260,9 @@ project:
     - group: App
       files:
         - file: ../cpu/main.cpp
-        - file: ../cpu/embedded_models.cpp
-        - file: ../cpu/embedded_models_blob.S
+        # This context's OWN M7 (DSP-sized) models, not cpu's MVE set.
+        - file: ./embedded_models.cpp
+        - file: ./embedded_models_blob.S
         - file: ../cpu/et_pal_override.cpp
         # No ALL_OPS_ETHOS_U define -> compiles to the no-op ethos_setup().
         - file: ../cpu/ethos_setup.cpp
