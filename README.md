@@ -13,17 +13,16 @@ Standalone copy of the ExecuTorch CMSIS-Pack all-ops test, exported from
 The three CPU contexts cover all three CMSIS-NN scratch-sizing regimes
 (MVE / DSP / SCALAR). Models 166-167 are scratch-buffer danger shapes
 (`quantized_depthwise_conv2d_deep` with 384 channels, `quantized_conv2d_1xn_pad`)
-whose DSP requirement exceeds the MVE-sized AoT scratch: on the Cortex-M7 they
-exercise the kernels' runtime scratch top-up.
+whose DSP scratch requirement exceeds the MVE-sized buffer.
 
-**Scratch-buffer fix:** the danger-shape models on DSP-class cores need a
-runtime fix in the ExecuTorch Cortex-M kernels — `quantized_avg_pool2d` /
-`quantized_depthwise_conv2d` compare the AoT scratch tensor against the running
-core's `arm_*_get_buffer_size()` and top up from the kernel temp allocator when
-short. Without it, MVE-exported `.pte`s fail (or silently overrun) on DSP-class
-cores. The fix lives in the ExecuTorch tree
-(`backends/cortex_m/ops/op_quantized_{avg_pool2d,depthwise_conv2d}.cpp`); build
-the pack from a checkout that includes it.
+**Per-core scratch sizing:** each context embeds models whose AoT scratch is
+sized for that context's core — the CPU/Corstone contexts use the M55/MVE
+default, and the H7B3 (Cortex-M7) context embeds its own models exported with
+`generate_test_models.py --target-core m7` so the scratch is DSP-sized at
+compile time (e.g. `quantized_depthwise_conv2d_deep`: 19,200 B for DSP vs
+12,400 B for MVE). No runtime scratch handling is needed — the danger shapes
+verify that the per-core AoT sizing is correct; a model exported for the wrong
+path would under-allocate on the DSP kernel, whose only guard is a NULL check.
 
 ## Notes on this export
 
